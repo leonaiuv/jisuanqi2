@@ -14,6 +14,10 @@ type Inputs = {
   oneHourSpend: string
   targetFeeRate: string
   targetRefundRate: string
+  monthGmv: string
+  monthSpend: string
+  monthRefundRate: string
+  monthExpectedRefundRate: string
 }
 
 type Scenario = {
@@ -137,6 +141,26 @@ function newId() {
   return `${Date.now()}_${Math.random().toString(16).slice(2)}`
 }
 
+function normalizeInputs(inputs: unknown): Inputs | null {
+  if (!inputs || typeof inputs !== 'object') return null
+  const obj = inputs as Record<string, unknown>
+  const get = (key: keyof Inputs) => (typeof obj[key] === 'string' ? (obj[key] as string) : '')
+  return {
+    todayGmv: get('todayGmv'),
+    todaySpend: get('todaySpend'),
+    todayRefundRate: get('todayRefundRate'),
+    platformRefundRate1h: get('platformRefundRate1h'),
+    oneHourGmv: get('oneHourGmv'),
+    oneHourSpend: get('oneHourSpend'),
+    targetFeeRate: get('targetFeeRate'),
+    targetRefundRate: get('targetRefundRate'),
+    monthGmv: get('monthGmv'),
+    monthSpend: get('monthSpend'),
+    monthRefundRate: get('monthRefundRate'),
+    monthExpectedRefundRate: get('monthExpectedRefundRate'),
+  }
+}
+
 function loadScenarios(): Scenario[] {
   if (typeof window === 'undefined') return []
   try {
@@ -145,17 +169,19 @@ function loadScenarios(): Scenario[] {
     const parsed = JSON.parse(raw) as unknown
     if (!Array.isArray(parsed)) return []
     return parsed
-      .filter((x): x is Scenario => {
-        if (!x || typeof x !== 'object') return false
-        const s = x as Scenario
-        return (
-          typeof s.id === 'string' &&
-          typeof s.name === 'string' &&
-          typeof s.createdAt === 'number' &&
-          typeof s.inputs === 'object' &&
-          s.inputs !== null
-        )
+      .map((x) => {
+        if (!x || typeof x !== 'object') return null
+        const obj = x as Record<string, unknown>
+        const id = obj.id
+        const name = obj.name
+        const createdAt = obj.createdAt
+        if (typeof id !== 'string' || typeof name !== 'string' || typeof createdAt !== 'number') return null
+        const inputs = normalizeInputs(obj.inputs)
+        if (!inputs) return null
+        const scenario: Scenario = { id, name, createdAt, inputs }
+        return scenario
       })
+      .filter((x): x is Scenario => x !== null)
       .slice(0, 100)
   } catch {
     return []
@@ -299,6 +325,12 @@ export function App() {
   const [targetFeeRate, setTargetFeeRate] = useState('')
   const [targetRefundRate, setTargetRefundRate] = useState('')
 
+  const [monthGmv, setMonthGmv] = useState('')
+  const [monthSpend, setMonthSpend] = useState('')
+  const [monthRefundRate, setMonthRefundRate] = useState('')
+  const [monthAdvancedOpen, setMonthAdvancedOpen] = useState(false)
+  const [monthExpectedRefundRate, setMonthExpectedRefundRate] = useState('')
+
   const [scenarioName, setScenarioName] = useState('')
   const [scenarios, setScenarios] = useState<Scenario[]>([])
 
@@ -390,6 +422,51 @@ export function App() {
     },
   )
 
+  const monthGmvNum = parseMoney(monthGmv)
+  const monthSpendNum = parseMoney(monthSpend)
+  const monthGmvErr = moneyError(monthGmv, monthGmvNum)
+  const monthSpendErr = moneyError(monthSpend, monthSpendNum)
+
+  const monthRefundParsed = parsePercentToRate(monthRefundRate)
+  const monthRefundErr = refundRateError(monthRefundRate, monthRefundParsed)
+  const monthRefundAssumed = isBlank(monthRefundRate)
+  const monthRefundForCalc = monthRefundErr ? null : monthRefundParsed ?? 0
+
+  const monthExpectedParsed = parsePercentToRate(monthExpectedRefundRate)
+  const monthExpectedErr = refundRateError(monthExpectedRefundRate, monthExpectedParsed)
+  const monthExpectedForCalc =
+    isBlank(monthExpectedRefundRate) ? null : monthExpectedErr ? null : monthExpectedParsed
+
+  const roiGrossMonth = calcDiv(monthGmvErr ? null : monthGmvNum, monthSpendErr ? null : monthSpendNum, {
+    missing: '请填写本月成交金额与广告消耗',
+    denomZero: '消耗为0',
+    bothZero: '成交与消耗均为0（无定义）',
+  })
+
+  const netGmvMonth = calcNetGmv(monthGmvErr ? null : monthGmvNum, monthRefundForCalc)
+  const feeRateMonth = calcDiv(monthSpendErr ? null : monthSpendNum, netGmvMonth, {
+    missing: '请填写本月成交/消耗/退款率',
+    denomZero: '净成交为0',
+    bothZero: '净成交与消耗均为0（无定义）',
+  })
+  const netRoiMonth = calcDiv(netGmvMonth, monthSpendErr ? null : monthSpendNum, {
+    missing: '请填写本月成交/消耗/退款率',
+    denomZero: '消耗为0',
+    bothZero: '净成交与消耗均为0（无定义）',
+  })
+
+  const netGmvMonthForecast = calcNetGmv(monthGmvErr ? null : monthGmvNum, monthExpectedForCalc)
+  const feeRateMonthForecast = calcDiv(monthSpendErr ? null : monthSpendNum, netGmvMonthForecast, {
+    missing: '请填写本月成交/消耗与预计最终退款率',
+    denomZero: '净成交为0',
+    bothZero: '净成交与消耗均为0（无定义）',
+  })
+  const netRoiMonthForecast = calcDiv(netGmvMonthForecast, monthSpendErr ? null : monthSpendNum, {
+    missing: '请填写本月成交/消耗与预计最终退款率',
+    denomZero: '消耗为0',
+    bothZero: '净成交与消耗均为0（无定义）',
+  })
+
   const diffSummary = useMemo(() => {
     if (todayRefundForCalc === null || refund1hForCalc === null) return null
     const delta = todayRefundForCalc - refund1hForCalc
@@ -412,6 +489,10 @@ export function App() {
         oneHourSpend,
         targetFeeRate,
         targetRefundRate,
+        monthGmv,
+        monthSpend,
+        monthRefundRate,
+        monthExpectedRefundRate,
       },
     }
     setScenarios([next, ...scenarios])
@@ -428,7 +509,12 @@ export function App() {
     setOneHourSpend(i.oneHourSpend)
     setTargetFeeRate(i.targetFeeRate)
     setTargetRefundRate(i.targetRefundRate)
-    if (!isBlank(i.oneHourGmv) || !isBlank(i.oneHourSpend)) setAdvancedOpen(true)
+    setMonthGmv(i.monthGmv)
+    setMonthSpend(i.monthSpend)
+    setMonthRefundRate(i.monthRefundRate)
+    setMonthExpectedRefundRate(i.monthExpectedRefundRate)
+    setAdvancedOpen(!isBlank(i.oneHourGmv) || !isBlank(i.oneHourSpend))
+    setMonthAdvancedOpen(!isBlank(i.monthExpectedRefundRate))
   }
 
   const handleDeleteScenario = (id: string) => {
@@ -610,7 +696,92 @@ export function App() {
             </div>
           </Card>
 
-          <Card title="方案保存（可选）" subtitle="保存多个输入组合，便于快速对比与回填（仅存本地浏览器）">
+          <Card
+            title="月度费率（本月累计）"
+            subtitle="输入：本月成交、本月消耗、本月退款率（已发生） → 输出：月度费率、净ROI、退款前ROI"
+          >
+            <div className="grid gap-4 sm:grid-cols-3">
+              <Field
+                label="本月成交金额（元）"
+                value={monthGmv}
+                onChange={setMonthGmv}
+                placeholder="例如：980000"
+                error={monthGmvErr}
+              />
+              <Field
+                label="本月广告消耗（元）"
+                value={monthSpend}
+                onChange={setMonthSpend}
+                placeholder="例如：210000"
+                error={monthSpendErr}
+              />
+              <Field
+                label="本月退款率（%｜已发生）"
+                value={monthRefundRate}
+                onChange={setMonthRefundRate}
+                placeholder="例如：12 或 12%"
+                error={monthRefundErr}
+                hint={
+                  monthRefundAssumed
+                    ? '未填写将按 0% 计算；建议口径：本月已退款金额 / 本月成交金额（截至今天）'
+                    : '建议口径：本月已退款金额 / 本月成交金额（截至今天）'
+                }
+              />
+            </div>
+
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <Metric label="月度退款前ROI（成交/消耗）" value={formatCalc(roiGrossMonth, formatFixed2)} />
+              <Metric label="月度费率（消耗/净成交）" value={formatCalc(feeRateMonth, formatPercentFromRate)} />
+              <Metric label="月度净ROI（剔除退款后）" value={formatCalc(netRoiMonth, formatFixed2)} />
+              <Metric
+                label="本月净成交金额（成交*(1-退款率)）"
+                value={
+                  netGmvMonth === null
+                    ? { text: '—', note: '请填写本月成交金额与退款率' }
+                    : { text: formatMoney(netGmvMonth) }
+                }
+              />
+            </div>
+
+            <div className="mt-3">
+              <Button variant="ghost" onClick={() => setMonthAdvancedOpen(!monthAdvancedOpen)}>
+                {monthAdvancedOpen ? '收起高级（预计最终退款率）' : '展开高级（可选：预计最终退款率）'}
+              </Button>
+            </div>
+
+            {monthAdvancedOpen ? (
+              <div className="mt-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field
+                    label="预计最终退款率（%｜可选）"
+                    value={monthExpectedRefundRate}
+                    onChange={setMonthExpectedRefundRate}
+                    placeholder="例如：18 或 18%"
+                    error={monthExpectedErr}
+                    hint="用于月末预估（解决退款延后导致的低估）"
+                  />
+                </div>
+
+                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <Metric
+                    label="预计月度费率（按预计最终退款率）"
+                    value={formatCalc(feeRateMonthForecast, formatPercentFromRate)}
+                  />
+                  <Metric
+                    label="预计月度净ROI（按预计最终退款率）"
+                    value={formatCalc(netRoiMonthForecast, formatFixed2)}
+                  />
+                </div>
+              </div>
+            ) : null}
+
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs text-slate-600">
+              提示：月度“已发生退款率”适合对账/当前净产出；由于退款会延后，做月末预测更建议用“预计最终退款率”（可取历史成熟退款率，或按成交日归因的 D+7 / D+14 退款率）。
+            </div>
+          </Card>
+
+          <div className="lg:col-span-2">
+            <Card title="方案保存（可选）" subtitle="保存多个输入组合，便于快速对比与回填（仅存本地浏览器）">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
               <div className="flex-1">
                 <Field
@@ -674,7 +845,8 @@ export function App() {
                 </div>
               )}
             </div>
-          </Card>
+            </Card>
+          </div>
         </div>
       </div>
     </div>
